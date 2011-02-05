@@ -1,9 +1,9 @@
 #pragma once
 
-#include    <windows.h>
-#include    <atlstr.h>
-#include    <atlcoll.h>
-#include    <strsafe.h>
+#include <unordered_map>
+#include <windows.h>
+#include <strsafe.h>
+#include <shlwapi.h>
 #include <npapi.h>
 #include <npfunctions.h>
 #include <npruntime.h>
@@ -11,7 +11,8 @@
 class NPObj : public NPObject {
 private:
     static void *p;
-    static CAtlMap<NPObject*, NPObj*> _map;
+    typedef std::unordered_map<NPObject*, NPObj*> Map;
+    static Map _map;
     // static NPObject* _allocate( NPP, NPClass * );
     static void _deallocate( NPObject * );
     static bool _hasMethod( NPObject*, NPIdentifier );

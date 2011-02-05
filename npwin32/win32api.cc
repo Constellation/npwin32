@@ -1,4 +1,7 @@
-#include    "npobj.h"
+#include <string>
+#include <vector>
+#include <memory>
+#include "npobj.h"
 
 #define MIME_TYPES_DESCRIPTION      "application/x-win32api-dynamic-call"
 
@@ -113,7 +116,8 @@ public:
 
 class win32api : public NPObj {
 private:
-    CAtlMap<LPCWSTR,HMODULE> _hDll;
+    typedef std::unordered_map<std::wstring, HMODULE> Map;
+    Map _hDll;
 public:
     win32api( NPP instance ) : NPObj( instance, true ){ LOGF; };
     ~win32api();
@@ -124,12 +128,12 @@ public:
 
 class dllfunc : public NPObj {
 private:
-    void *_addr; 
+    void *_addr;
     LPWSTR _dll;
     LPSTR _func;
     LPWSTR _argType;
     WCHAR _resultType;
-    CAtlArray<MyVariant> _argBuffer;
+    std::vector<MyVariant> _argBuffer;
 public:
     dllfunc( NPP , LPVOID );
     ~dllfunc();
@@ -147,14 +151,10 @@ static LPCSTR W32E_CANNOT_ALLOCATE_MEM = "cannot allocate memory";
 
 win32api::~win32api()
 {
-    POSITION pos;
-    HMODULE h;
-
     LOGF;
-    pos = _hDll.GetStartPosition();
-    while( pos != NULL ){
-        h = _hDll.GetNextValue( pos );
-        FreeLibrary( h );
+    for (Map::const_iterator it = _hDll.begin(),
+         last = _hDll.end(); it != last; ++it) {
+      FreeLibrary(it->second);
     }
 }
 
@@ -190,46 +190,39 @@ bool win32api::invoke( LPCWSTR methodName, const NPVariant *args, uint32_t argCo
 
 dllfunc* win32api::import( const NPVariant *args, LPCSTR* pszErrMsg )
 {
-    LPCWSTR szDLL = NULL, szArgs = NULL, szResult = NULL;
-    LPCSTR szFunc = NULL;
-    HMODULE h;
     LPVOID pProc;
+    HMODULE h;
     dllfunc *pfunc = NULL;
 
     LOGF;
-    __try{
-        pszErrMsg = NULL;
-        szDLL = Npv2WStr( args[ 0 ] );
-        szFunc = Npv2Str( args[ 1 ] );
-        szArgs = Npv2WStr( args[ 2 ] );
-        szResult = Npv2WStr( args[ 3 ] );
-        LOG( L"dll=%s arg=%s result=%s", szDLL, szArgs, szResult );
-        LOG( "func=%s", szFunc );
-        if( !_hDll.Lookup( szDLL, h ) ){
-            LOG( L"Loading DLL:%s", szDLL );
-            h = LoadLibraryW( szDLL );
-            if( h == NULL ){
-                *pszErrMsg = W32E_CANNOT_LOAD_DLL;
-                __leave;
-            }
-            _hDll[ szDLL ] = h;
+    pszErrMsg = NULL;
+    std::unique_ptr<const wchar_t> szDLL(Npv2WStr( args[ 0 ] ));
+    std::unique_ptr<const wchar_t> szArgs(Npv2WStr( args[ 2 ] ));
+    std::unique_ptr<const wchar_t> szResult(Npv2WStr( args[ 3 ] ));
+    std::unique_ptr<const char> szFunc(Npv2Str( args[ 1 ] ));
+    LOG( L"dll=%s arg=%s result=%s", szDLL.get(), szArgs.get(), szResult.get() );
+    LOG( "func=%s", szFunc.get() );
+    const Map::const_iterator it = _hDll.find(szDLL.get());
+    if(it == _hDll.end()){
+        LOG( L"Loading DLL:%s", szDLL.get() );
+        h = LoadLibraryW( szDLL.get() );
+        if( h == NULL ){
+            *pszErrMsg = W32E_CANNOT_LOAD_DLL;
+            return pfunc;
         }
-        pProc = GetProcAddress( h, szFunc );
-        if( pProc == NULL ){
-            LOG( "cannot find %s", szFunc );
-            *pszErrMsg = W32E_CANNOT_GET_ADDR;
-            __leave;
-        }
-        // TODO: check arg type and result type
-        pfunc = new dllfunc( getNPP(), pProc );
-        pfunc->setNames( szDLL, szFunc, szArgs, *szResult );
+        _hDll[ szDLL.get() ] = h;
+    } else {
+      h = it->second;
     }
-    __finally{
-        delete szDLL;
-        delete szFunc;
-        delete szArgs;
-        delete szResult;
+    pProc = GetProcAddress( h, szFunc.get() );
+    if( pProc == NULL ){
+        LOG( "cannot find %s", szFunc.get() );
+        *pszErrMsg = W32E_CANNOT_GET_ADDR;
+        return pfunc;
     }
+    // TODO: check arg type and result type
+    pfunc = new dllfunc( getNPP(), pProc );
+    pfunc->setNames( szDLL.get(), szFunc.get(), szArgs.get(), *szResult );
     return pfunc;
 
 }
@@ -269,7 +262,7 @@ bool dllfunc::setNames( LPCWSTR szDll, LPCSTR szFunc, LPCWSTR szArgs, WCHAR cRes
     StringCchCopyA( _func, s2, szFunc );
     StringCchCopyW( _argType, s3, szArgs );
 
-    _argBuffer.SetCount( s3 - 1, s3 - 1 );
+    _argBuffer.resize(s3 - 1);
 
     _resultType = cResult;
 
@@ -476,7 +469,7 @@ bool dllfunc::arg( const NPVariant *args, DWORD argCount, NPVariant *result, LPC
         return false;
     }
     i = Npv2Int( args[ 0 ] );
-    if( i < 0 || _argBuffer.GetCount() <= i ){
+    if( i < 0 || _argBuffer.size() <= i ){
         LOG( "invalid argument" );
         *pszErrMsg = W32E_INVALID_ARGUMENT;
         return false;

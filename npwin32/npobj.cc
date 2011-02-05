@@ -1,4 +1,4 @@
-#include    "npobj.h"
+#include "npobj.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -38,7 +38,7 @@ NPObj::NPObj( NPP instance, bool retainObject )
 NPObj::~NPObj()
 {
     LOGF;
-    NPObj::_map.RemoveKey( _npobject );
+    NPObj::_map.erase(_npobject);
     npnfuncs->releaseobject( _npobject );
 }
 
@@ -47,18 +47,18 @@ bool NPObj::_hasMethod( NPObject *obj, NPIdentifier methodName )
     bool r;
     DWORD w;
     LPWSTR s;
-    NPObj* npobj;
     NPUTF8 *name = npnfuncs->utf8fromidentifier( methodName );
 
     LOGF;
-    if( !NPObj::_map.Lookup( obj, npobj ) ){
-        return false;
+    const Map::const_iterator it = NPObj::_map.find(obj);
+    if (it == NPObj::_map.end()) {
+      return false;
     }
     w = MultiByteToWideChar( CP_UTF8, 0, name, -1, NULL, 0 );
     s = new WCHAR[ w + 1 ];
     MultiByteToWideChar( CP_UTF8, 0, name, -1, s, w );
     LOG( L"methodName=%s", s );
-    r = npobj->hasMethod( s );
+    r = it->second->hasMethod( s );
 
     delete s;
     npnfuncs->memfree( name );
@@ -72,18 +72,18 @@ bool NPObj::_invoke( NPObject *obj, NPIdentifier methodName,
     bool r;
     DWORD w;
     LPWSTR s;
-    NPObj* npobj;
     NPUTF8 *name = npnfuncs->utf8fromidentifier( methodName );
 
     LOGF;
-    if( !NPObj::_map.Lookup( obj, npobj ) ){
-        return false;
+    const Map::const_iterator it = NPObj::_map.find(obj);
+    if (it == NPObj::_map.end()) {
+      return false;
     }
     w = MultiByteToWideChar( CP_UTF8, 0, name, -1, NULL, 0 );
     s = new WCHAR[ w + 1 ];
     MultiByteToWideChar( CP_UTF8, 0, name, -1, s, w );
     LOG( L"methodName=%s", s );
-    r = npobj->invoke( s, args, argCount, result );
+    r = it->second->invoke( s, args, argCount, result );
     delete s;
     npnfuncs->memfree( name );
     return r;
@@ -102,12 +102,13 @@ NPObject* NPObj::_allocate( NPP npp, NPClass *aClass )
 
 void NPObj::_deallocate( NPObject *obj )
 {
-    NPObj *npobj;
-
     LOGF;
 
-    if( !NPObj::_map.Lookup( obj, npobj ) ) return;
-    delete npobj;
+    const Map::const_iterator it = NPObj::_map.find(obj);
+    if (it == NPObj::_map.end()) {
+      return;
+    }
+    delete it->second;
 }
 
 NPObject* NPObj::getNPObject()
@@ -138,7 +139,7 @@ bool NPObj::invoke( LPCWSTR methodName, const NPVariant *args, uint32_t argCount
 }
 #pragma warning( pop )
 
-CAtlMap<NPObject*, NPObj*> NPObj::_map;
+NPObj::Map NPObj::_map;
 
 LPCSTR NPOE_MISSING_ARGUMENT = "missing argument"; 
 LPCSTR NPOE_INVALID_ARG_TYPE = "invalid argument type"; 
