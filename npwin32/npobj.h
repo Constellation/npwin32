@@ -1,5 +1,6 @@
 #pragma once
 
+#include <string>
 #include <unordered_map>
 #include <windows.h>
 #include <strsafe.h>
@@ -84,8 +85,8 @@ public:
 #endif
 
 LPCSTR checkNpArgs( LPCSTR lpszCheck, const NPVariant *args, uint32_t argCount );
-LPWSTR Npv2WStr( NPVariant v );
-LPSTR Npv2Str( NPVariant v );
+std::wstring Npv2WStr( NPVariant v );
+std::string Npv2Str( NPVariant v );
 int Npv2Int( NPVariant v );
 
 NPUTF8* allocUtf8( LPCSTR s );

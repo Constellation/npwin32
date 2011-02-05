@@ -46,7 +46,6 @@ bool NPObj::_hasMethod( NPObject *obj, NPIdentifier methodName )
 {
     bool r;
     DWORD w;
-    LPWSTR s;
     NPUTF8 *name = npnfuncs->utf8fromidentifier( methodName );
 
     LOGF;
@@ -55,12 +54,10 @@ bool NPObj::_hasMethod( NPObject *obj, NPIdentifier methodName )
       return false;
     }
     w = MultiByteToWideChar( CP_UTF8, 0, name, -1, NULL, 0 );
-    s = new WCHAR[ w + 1 ];
-    MultiByteToWideChar( CP_UTF8, 0, name, -1, s, w );
-    LOG( L"methodName=%s", s );
-    r = it->second->hasMethod( s );
-
-    delete s;
+    std::vector<wchar_t> s(w+1, '\0');
+    MultiByteToWideChar( CP_UTF8, 0, name, -1, s.data(), w );
+    LOG( L"methodName=%s", s.data() );
+    r = it->second->hasMethod(s.data());
     npnfuncs->memfree( name );
     return r;
 
@@ -71,7 +68,6 @@ bool NPObj::_invoke( NPObject *obj, NPIdentifier methodName,
 {
     bool r;
     DWORD w;
-    LPWSTR s;
     NPUTF8 *name = npnfuncs->utf8fromidentifier( methodName );
 
     LOGF;
@@ -80,11 +76,10 @@ bool NPObj::_invoke( NPObject *obj, NPIdentifier methodName,
       return false;
     }
     w = MultiByteToWideChar( CP_UTF8, 0, name, -1, NULL, 0 );
-    s = new WCHAR[ w + 1 ];
-    MultiByteToWideChar( CP_UTF8, 0, name, -1, s, w );
-    LOG( L"methodName=%s", s );
-    r = it->second->invoke( s, args, argCount, result );
-    delete s;
+    std::vector<wchar_t> vec(w+1, '\0');
+    MultiByteToWideChar( CP_UTF8, 0, name, -1, vec.data(), w );
+    LOG( L"methodName=%s", vec.data() );
+    r = it->second->invoke( vec.data(), args, argCount, result );
     npnfuncs->memfree( name );
     return r;
 }
@@ -186,53 +181,43 @@ LPCSTR checkNpArgs( LPCSTR lpszCheck, const NPVariant *args, uint32_t argCount )
     return NULL;
 }
 
-LPWSTR Npv2WStr( NPVariant v )
+std::wstring Npv2WStr( NPVariant v )
 {
-    DWORD w;
-    LPWSTR s;
-
     if( NPVARIANT_IS_NULL( v ) ){
-        s = new WCHAR[ 1 ];
-        *s = L'\0';
+      return std::wstring();
     }else if( NPVARIANT_IS_BOOLEAN( v ) ){
-        s = new WCHAR[ 6 ];
         if( NPVARIANT_TO_BOOLEAN( v ) ){
-            StringCchCopyW( s, 6, L"true" );
+          return L"true";
         }else{
-            StringCchCopyW( s, 6, L"false" );
+          return L"false";
         }
     }else if( NPVARIANT_IS_INT32( v ) ){
-        s = new WCHAR[ 11 ];
-        StringCchPrintfW( s, 11, L"%d", NPVARIANT_TO_INT32( v ) );
+        std::vector<wchar_t> vec(11, '\0');
+        StringCchPrintfW( vec.data(), 11, L"%d", NPVARIANT_TO_INT32(v) );
+        return std::wstring(vec.data());
     }else if( NPVARIANT_IS_DOUBLE( v ) ){
-        s = new WCHAR[ 30 ];
-        StringCchPrintfW( s, 11, L"%f", NPVARIANT_TO_DOUBLE( v ) );
+        std::vector<wchar_t> vec(30, '\0');
+        StringCchPrintfW( vec.data(), 11, L"%f", NPVARIANT_TO_DOUBLE(v) );
+        return std::wstring(vec.data());
     }else if( NPVARIANT_IS_STRING( v ) ){
         NPString str = NPVARIANT_TO_STRING( v );
-        w = MultiByteToWideChar( CP_UTF8, 0, str.UTF8Characters, str.UTF8Length + 1, NULL, 0 );
-        s = new WCHAR[ w + 1 ];
-        MultiByteToWideChar( CP_UTF8, 0, str.UTF8Characters, str.UTF8Length + 1, s, w );
-    }else{
-        s = new WCHAR[ 1 ];
-        *s = L'\0';
+        DWORD w = MultiByteToWideChar( CP_UTF8, 0, str.UTF8Characters, str.UTF8Length + 1, NULL, 0 );
+        std::vector<wchar_t> vec(w+1, '\0');
+        MultiByteToWideChar( CP_UTF8, 0, str.UTF8Characters, str.UTF8Length + 1, vec.data(), w );
+        return std::wstring(vec.data());
+    }else {
+        return std::wstring();
     }
-    return s;
 }
 
-LPSTR Npv2Str( NPVariant v )
+std::string Npv2Str( NPVariant v )
 {
-    DWORD w;
-    LPSTR s;
-    LPWSTR ws;
-
-    ws = Npv2WStr( v );
-    if( ws == NULL ) return NULL;
-
-    w = WideCharToMultiByte( CP_ACP, 0, ws, -1, NULL, 0, NULL, NULL );
-    s = new CHAR[ w + 1 ];
-    WideCharToMultiByte( CP_ACP, 0, ws, -1, s, w, NULL, NULL );
-    delete ws;
-    return s;
+    std::wstring ws = Npv2WStr( v );
+    if( ws.empty() ) return std::string();
+    const DWORD w = WideCharToMultiByte( CP_ACP, 0, ws.c_str(), -1, NULL, 0, NULL, NULL );
+    std::vector<char> vec(w+1, '\0');
+    WideCharToMultiByte( CP_ACP, 0, ws.c_str(), -1, vec.data(), w, NULL, NULL );
+    return std::string(vec.data());
 }
 
 int Npv2Int( NPVariant v )
@@ -249,8 +234,8 @@ int Npv2Int( NPVariant v )
         return NPVARIANT_TO_INT32( v );
     }else if( NPVARIANT_IS_STRING( v ) ){
         int n;
-        LPCWSTR s = Npv2WStr( v );
-        if( StrToIntExW( s, STIF_DEFAULT, &n ) ){
+        std::wstring s = Npv2WStr( v );
+        if( StrToIntExW( s.c_str(), STIF_DEFAULT, &n ) ){
             return n;
         }
     }
@@ -261,14 +246,13 @@ NPUTF8* allocUtf8( LPCSTR s )
 {
     // convert to UTF-16
     DWORD w = MultiByteToWideChar( CP_ACP, 0, s, -1, NULL, 0 );
-    LPWSTR sw = new WCHAR[ w + 1 ];
-    MultiByteToWideChar( CP_ACP, 0, s, -1, sw, w + 1 );
+    std::vector<wchar_t> sw(w + 1, '\0');
+    MultiByteToWideChar( CP_ACP, 0, s, -1, sw.data(), w + 1 );
 
     // convert to UTF-8
-    w = WideCharToMultiByte( CP_UTF8, 0, sw, -1, NULL, 0, 0, 0 );
+    w = WideCharToMultiByte( CP_UTF8, 0, sw.data(), -1, NULL, 0, 0, 0 );
     NPUTF8 *sa = (NPUTF8 *)(npnfuncs->memalloc( w + 1 ));
-    WideCharToMultiByte( CP_UTF8, 0, sw, -1, sa, w + 1, 0, 0 );
-    delete sw;
+    WideCharToMultiByte( CP_UTF8, 0, sw.data(), -1, sa, w + 1, 0, 0 );
     return sa;
 }
 

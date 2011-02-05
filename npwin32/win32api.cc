@@ -1,6 +1,8 @@
 #include <string>
 #include <vector>
 #include <memory>
+#include <algorithm>
+#include <functional>
 #include "npobj.h"
 
 #define MIME_TYPES_DESCRIPTION      "application/x-win32api-dynamic-call"
@@ -33,8 +35,8 @@ private:
 public:
     void Clear( void )
     {
-        if( _vt == MVT_ASTR ) delete _vAstr; else
-        if( _vt == MVT_WSTR ) delete _vWstr;
+        if( _vt == MVT_ASTR ) delete[] _vAstr; else
+        if( _vt == MVT_WSTR ) delete[] _vWstr;
         _vt = MVT_EMPTY;
 
     };
@@ -55,22 +57,22 @@ public:
         _vInt = value;
         return *this;
     };
-    MyVariant &operator=(LPSTR value)
+    MyVariant &operator=(const std::string& value)
     {
-        size_t len = lstrlenA( value ) + 1;
+        const std::size_t len = value.size() + 1;
         Clear();
         _vt = MVT_ASTR;
         _vAstr = new CHAR[ len ];
-        StringCchCopyA( _vAstr, len, value );
+        StringCchCopyA( _vAstr, len, value.c_str() );
         return *this;
     };
-    MyVariant &operator=(LPWSTR value)
+    MyVariant &operator=(const std::wstring& value)
     {
-        size_t len = lstrlenW( value ) + 1;
+        const std::size_t len = value.size() + 1;
         Clear();
         _vt = MVT_WSTR;
         _vWstr = new WCHAR[ len ];
-        StringCchCopyW( _vWstr, len, value );
+        StringCchCopyW( _vWstr, len, value.c_str() );
         return *this;
     };
     operator int()
@@ -129,15 +131,17 @@ public:
 class dllfunc : public NPObj {
 private:
     void *_addr;
-    LPWSTR _dll;
-    LPSTR _func;
-    LPWSTR _argType;
+    std::wstring _dll;
+    std::string _func;
+    std::wstring _argType;
     WCHAR _resultType;
     std::vector<MyVariant> _argBuffer;
 public:
     dllfunc( NPP , LPVOID );
     ~dllfunc();
-    bool setNames( LPCWSTR, LPCSTR, LPCWSTR, WCHAR );
+    bool setNames(const std::wstring& szDll,
+                  const std::string& szFunc,
+                  const std::wstring& szArgs, WCHAR cResult );
     bool hasMethod( LPCWSTR methodName );
     bool invoke( LPCWSTR methodName, const NPVariant *args, uint32_t argCount, NPVariant *result);
     bool call( const NPVariant *args, DWORD argCount, NPVariant *result, LPCSTR* pszErrMsg );
@@ -152,10 +156,9 @@ static LPCSTR W32E_CANNOT_ALLOCATE_MEM = "cannot allocate memory";
 win32api::~win32api()
 {
     LOGF;
-    for (Map::const_iterator it = _hDll.begin(),
-         last = _hDll.end(); it != last; ++it) {
-      FreeLibrary(it->second);
-    }
+    std::for_each(_hDll.begin(), _hDll.end(), [](const Map::value_type& p) {
+        FreeLibrary(p.second);
+    });
 }
 
 bool win32api::hasMethod( LPCWSTR methodName )
@@ -196,73 +199,62 @@ dllfunc* win32api::import( const NPVariant *args, LPCSTR* pszErrMsg )
 
     LOGF;
     pszErrMsg = NULL;
-    std::unique_ptr<const wchar_t> szDLL(Npv2WStr( args[ 0 ] ));
-    std::unique_ptr<const wchar_t> szArgs(Npv2WStr( args[ 2 ] ));
-    std::unique_ptr<const wchar_t> szResult(Npv2WStr( args[ 3 ] ));
-    std::unique_ptr<const char> szFunc(Npv2Str( args[ 1 ] ));
-    LOG( L"dll=%s arg=%s result=%s", szDLL.get(), szArgs.get(), szResult.get() );
-    LOG( "func=%s", szFunc.get() );
-    const Map::const_iterator it = _hDll.find(szDLL.get());
+    const std::wstring szDLL(Npv2WStr( args[ 0 ] ));
+    const std::wstring szArgs(Npv2WStr( args[ 2 ] ));
+    const std::wstring szResult(Npv2WStr( args[ 3 ] ));
+    const std::string szFunc(Npv2Str( args[ 1 ] ));
+    LOG( L"dll=%s arg=%s result=%s", szDLL.c_str(), szArgs.c_str(), szResult.c_str() );
+    LOG( "func=%s", szFunc.c_str() );
+    const Map::const_iterator it = _hDll.find(szDLL);
     if(it == _hDll.end()){
-        LOG( L"Loading DLL:%s", szDLL.get() );
-        h = LoadLibraryW( szDLL.get() );
+        LOG( L"Loading DLL:%s", szDLL.c_str() );
+        h = LoadLibraryW( szDLL.c_str() );
         if( h == NULL ){
             *pszErrMsg = W32E_CANNOT_LOAD_DLL;
             return pfunc;
         }
-        _hDll[ szDLL.get() ] = h;
+        _hDll[ szDLL ] = h;
     } else {
       h = it->second;
     }
-    pProc = GetProcAddress( h, szFunc.get() );
+    pProc = GetProcAddress( h, szFunc.c_str() );
     if( pProc == NULL ){
-        LOG( "cannot find %s", szFunc.get() );
+        LOG( "cannot find %s", szFunc.c_str() );
         *pszErrMsg = W32E_CANNOT_GET_ADDR;
         return pfunc;
     }
     // TODO: check arg type and result type
     pfunc = new dllfunc( getNPP(), pProc );
-    pfunc->setNames( szDLL.get(), szFunc.get(), szArgs.get(), *szResult );
+    pfunc->setNames( szDLL, szFunc, szArgs, szResult[0]);
     return pfunc;
 
 }
 
-dllfunc::dllfunc( NPP instance, LPVOID pProc ) : NPObj( instance, false )
+dllfunc::dllfunc( NPP instance, LPVOID pProc )
+  : NPObj( instance, false ),
+    _addr(pProc),
+    _dll(),
+    _func(),
+    _argType()
 {
     LOGF;
-    _addr = pProc;
-    _dll = NULL;
-    _func = NULL;
-    _argType = NULL;
 }
 
 dllfunc::~dllfunc()
 {
     LOGF;
-    delete _dll;
-    delete _func;
 }
 
-bool dllfunc::setNames( LPCWSTR szDll, LPCSTR szFunc, LPCWSTR szArgs, WCHAR cResult )
+bool dllfunc::setNames(const std::wstring& szDll,
+                       const std::string& szFunc,
+                       const std::wstring& szArgs, WCHAR cResult )
 {
     LOGF;
-    size_t s1, s2, s3;
+    _dll = szDll;
+    _func = szFunc;
+    _argType = szArgs;
 
-    delete _dll;
-    delete _func;
-    delete _argType;
-
-    s1 = lstrlenW( szDll ) + 1;
-    s2 = lstrlenA( szFunc ) + 1;
-    s3 = lstrlenW( szArgs ) + 1;
-    _dll = new WCHAR[ s1 ];
-    _func = new CHAR[ s2 ];
-    _argType = new WCHAR[ s3 ];
-    StringCchCopyW( _dll, s1, szDll );
-    StringCchCopyA( _func, s2, szFunc );
-    StringCchCopyW( _argType, s3, szArgs );
-
-    _argBuffer.resize(s3 - 1);
+    _argBuffer.resize(_argType.size());
 
     _resultType = cResult;
 
@@ -318,7 +310,7 @@ inline void DUMP( LPBYTE p, DWORD len )
         len--;
     }
     LOG( buf );
-    delete buf;
+    delete [] buf;
 #endif
 }
 #pragma warning( pop )
@@ -326,137 +318,133 @@ inline void DUMP( LPBYTE p, DWORD len )
 bool dllfunc::call( const NPVariant *args, DWORD argCount, NPVariant *result, LPCSTR* pszErrMsg )
 {
     int i;
-    DWORD n, dwSize;
-    LPBYTE p0 = NULL, p;
+    DWORD dwSize;
     bool Result = false;
     typedef void (WINAPI *voidproc)(void);
     typedef DWORD (WINAPI *dwproc)(void);
 
     LOGF;
-    LOG( L" %s", _dll );
-    LOG( " %s", _func );
+    LOG( L" %s", _dll.c_str() );
+    LOG( " %s", _func.c_str() );
 
     *pszErrMsg = NULL;
 
-    n = lstrlenW( _argType );
+    const DWORD n = _argType.size();
     if( argCount < n ){
         *pszErrMsg = W32E_INVALID_ARGUMENT;
         return false;
     }
 
     dwSize = n * 5 + 10;
-    p0 = p = reinterpret_cast<LPBYTE>(VirtualAlloc( NULL, dwSize, MEM_COMMIT, PAGE_EXECUTE_READWRITE ) );
-    if( p0 == NULL ){
+    std::unique_ptr<std::remove_pointer<LPBYTE>::type, std::function<void(LPBYTE)>>
+        ptr(reinterpret_cast<LPBYTE>(VirtualAlloc( NULL, dwSize, MEM_COMMIT, PAGE_EXECUTE_READWRITE ) ),
+            [](LPBYTE byte) { VirtualFree( byte, 0, MEM_DECOMMIT | MEM_RELEASE ); });
+    LPBYTE p = ptr.get();
+    if (!ptr) {
         *pszErrMsg = W32E_CANNOT_ALLOCATE_MEM;
         return false;
     }
-    __try{
-        DWORD dw;
-        LPSTR sa;
-        LPWSTR sw;
-        //voidproc pf;
-        dwproc pf;
-        DWORD r;
+
+    //voidproc pf;
+    dwproc pf;
+    DWORD r;
 
 
 #ifdef JITDEBUG
-        *p++ = 0xcc;
+    *p++ = 0xcc;
 #endif
-        for( i = n - 1; i >= 0; i-- ){
-            *p++ = 0x68;
-            switch( _argType[ i ] ){
-            case 'N': // 32bit number
-                dw = static_cast<DWORD>( Npv2Int( args[ i ] ) );
-                LOG( L"%d : %c : %lu", i, _argType[ i ], dw );
-                _argBuffer[ i ] = dw;
-                *((LPDWORD)p) = dw;
-                p += sizeof( DWORD );
-                break;
-            case 'A' : // LPSTR
-                sa = Npv2Str( args[ i ] );
-                LOG( L"%d : %c ", i, _argType[ i ] );
-                _argBuffer[ i ] = sa;
-                *((LPDWORD)p) = (DWORD)(LPSTR)( _argBuffer[ i ] );
-                delete sa;
-                p += (int)(sizeof( LPSTR ) );
-                break;
-            case 'W' : // LPWSTR
-                sw = Npv2WStr( args[ i ] );
-                _argBuffer[ i ] = sw;
-                LOG( L"%d : %c : %s", i, _argType[ i ], sw );
-                *((LPDWORD)p) = (DWORD)(LPWSTR)( _argBuffer[ i ] );
-                delete sw;
-                p += (int)(sizeof( LPWSTR ));
-                break;
-            }
+    for( i = n - 1; i >= 0; i-- ){
+        *p++ = 0x68;
+        switch( _argType[ i ] ){
+        case 'N': {  // 32bit number
+            const DWORD dw = static_cast<DWORD>( Npv2Int( args[ i ] ) );
+            LOG( L"%d : %c : %lu", i, _argType[ i ], dw );
+            _argBuffer[ i ] = dw;
+            *((LPDWORD)p) = dw;
+            p += sizeof( DWORD );
+            break;
         }
-        // mov eax, func
-        *p++ = 0xb8;
-        *((LPDWORD)p) = (DWORD)_addr;
-        p += sizeof( DWORD);
-        // call eax
-        *p++ = 0xff;
-        *p++ = 0xd0;
-        // ret
-        *p++ = 0xc3; 
+        case 'A' : {  // LPSTR
+            const std::string sa = Npv2Str( args[ i ] );
+            LOG( L"%d : %c ", i, _argType[ i ] );
+            _argBuffer[ i ] = sa;
+            *((LPDWORD)p) = (DWORD)(LPSTR)( _argBuffer[ i ] );
+            p += (int)(sizeof( LPSTR ) );
+            break;
+        }
+        case 'W' : {  // LPWSTR
+            const std::wstring sw = Npv2WStr( args[ i ] );
+            _argBuffer[ i ] = sw;
+            LOG( L"%d : %c : %s", i, _argType[ i ], sw.c_str() );
+            *((LPDWORD)p) = (DWORD)(LPWSTR)( _argBuffer[ i ] );
+            p += (int)(sizeof( LPWSTR ));
+            break;
+        }
+        }
+    }
+    // mov eax, func
+    *p++ = 0xb8;
+    *((LPDWORD)p) = (DWORD)_addr;
+    p += sizeof( DWORD);
+    // call eax
+    *p++ = 0xff;
+    *p++ = 0xd0;
+    // ret
+    *p++ = 0xc3; 
 
-        pf = reinterpret_cast<dwproc>(p0);
-        DUMP( p0, dwSize );
-        LOG( "calling api" );
+    pf = reinterpret_cast<dwproc>(ptr.get());
+    DUMP( ptr.get(), dwSize );
+    LOG( "calling api" );
 #ifdef JITDEBUG
-        {
-            CHAR buf[ 1024 ];
-            int n = 0;
-            StringCchPrintfA( buf, _countof( buf ), "vsjitdebugger.exe -p %d", GetCurrentProcessId() );
-            WinExec( buf, SW_SHOW );
-            while( IsDebuggerPresent() == 0 && n < 50){
-                Sleep( 100 );
-                n++;
-            }
+    {
+        CHAR buf[ 1024 ];
+        int n = 0;
+        StringCchPrintfA( buf, _countof( buf ), "vsjitdebugger.exe -p %d", GetCurrentProcessId() );
+        WinExec( buf, SW_SHOW );
+        while( IsDebuggerPresent() == 0 && n < 50){
+            Sleep( 100 );
+            n++;
         }
+    }
 #endif
-        r = pf();
-        LOG( "called" );
+    r = pf();
+    LOG( "called" );
 
-        // set api result to *result
-        switch( _resultType ){
-        case L'N': // 32bit
-            INT32_TO_NPVARIANT( r, *result );
-            break;
-        case L'I': // 16bit
-            r &= 0xffff;
-            INT32_TO_NPVARIANT( r, *result );
-            break;
-        case L'C': // 8bit
-            r &= 0xff;
-            INT32_TO_NPVARIANT( r, *result );
-            break;
-        case L'A': // LPSTR
-            if( r == 0 ){
-                NULL_TO_NPVARIANT( *result );
-            }else{
-                NPUTF8 *s = allocUtf8( reinterpret_cast<LPCSTR>(r) );
-                STRINGZ_TO_NPVARIANT( s, *result );
-            }
-            break;
-        case L'W': // LPWSTR
-            if( r == 0 ){
-                NULL_TO_NPVARIANT( *result );
-            }else{
-                NPUTF8 *s = allocUtf8( reinterpret_cast<LPCWSTR>(r) );
-                STRINGZ_TO_NPVARIANT( s, *result );
-            }
-            break;
-        default:
-            VOID_TO_NPVARIANT( *result );
-            break;
+    // set api result to *result
+    switch( _resultType ){
+    case L'N': // 32bit
+        INT32_TO_NPVARIANT( r, *result );
+        break;
+    case L'I': // 16bit
+        r &= 0xffff;
+        INT32_TO_NPVARIANT( r, *result );
+        break;
+    case L'C': // 8bit
+        r &= 0xff;
+        INT32_TO_NPVARIANT( r, *result );
+        break;
+    case L'A': // LPSTR
+        if( r == 0 ){
+            NULL_TO_NPVARIANT( *result );
+        }else{
+            NPUTF8 *s = allocUtf8( reinterpret_cast<LPCSTR>(r) );
+            STRINGZ_TO_NPVARIANT( s, *result );
         }
+        break;
+    case L'W': // LPWSTR
+        if( r == 0 ){
+            NULL_TO_NPVARIANT( *result );
+        }else{
+            NPUTF8 *s = allocUtf8( reinterpret_cast<LPCWSTR>(r) );
+            STRINGZ_TO_NPVARIANT( s, *result );
+        }
+        break;
+    default:
+        VOID_TO_NPVARIANT( *result );
+        break;
+    }
 
-        Result = true;
-    }
-    __finally{
-        VirtualFree( p0, 0, MEM_DECOMMIT | MEM_RELEASE );
-    }
+    Result = true;
     return Result;
 }
 
@@ -478,9 +466,8 @@ bool dllfunc::arg( const NPVariant *args, DWORD argCount, NPVariant *result, LPC
     LOG( "index=%d", i );
     _argBuffer[ i ].ToNPVariant( result );
     {
-        LPSTR s = Npv2Str( *result );
-        LOG("%s", s );
-        delete s;
+        const std::string s = Npv2Str( *result );
+        LOG("%s", s.c_str() );
     }
     return true;
 
